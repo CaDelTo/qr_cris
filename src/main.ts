@@ -205,9 +205,7 @@ function loadModel(url: string) {
     scene.remove(model);
     model = null;
   }
-
-  console.log("Intentando cargar modelo desde:", url);
-
+  
   try {
     new URL(url);
   } catch (e) {
@@ -271,10 +269,8 @@ function updateModelPosition() {
     
     if (!model.parent) {
       scene.add(model);
-      console.log("Modelo añadido a la escena y posicionado correctamente");
     }
     
-    console.log(`QR detectado en: (${normalizedX.toFixed(2)}, ${normalizedY.toFixed(2)})`);
   }
 }
 
@@ -284,7 +280,6 @@ function animate() {
   const qrIsVisible = Date.now() - lastQRTimestamp < QR_TIMEOUT;
 
   if (!qrIsVisible && model) {
-    console.log("QR ya no es visible, eliminando modelo");
     scene.remove(model);
     model = null;
   }
