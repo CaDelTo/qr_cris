@@ -2,12 +2,130 @@ import { BrowserQRCodeReader } from "@zxing/browser";
 import * as THREE from "three";
 import { GLTFLoader } from "three-stdlib";
 
+const QR_TIMEOUT = 1000;
+const ROTATION_SPEED = 0.01;
+const ROTATION_DAMPING = 0.1;
+
 const video = document.getElementById("camera") as HTMLVideoElement;
 const qrReader = new BrowserQRCodeReader();
-let scene: THREE.Scene, camera: THREE.Camera, renderer: THREE.WebGLRenderer, model: THREE.Object3D | null = null;
+
+let scene: THREE.Scene;
+let camera: THREE.Camera; 
+let renderer: THREE.WebGLRenderer;
+let model: THREE.Object3D | null = null;
+
 let lastQRLocation: { x: number, y: number, width: number, height: number } | null = null;
-let lastQRTimestamp = 0; // Timestamp de la última vez que se detectó un QR
-const QR_TIMEOUT = 1000; // Tiempo en ms después del cual se considera que el QR ya no está visible
+let lastQRTimestamp = 0; 
+
+let isDragging = false;
+let previousMousePosition = { x: 0, y: 0 };
+let targetRotation = { x: 0, y: 0 };
+let currentRotation = { x: 0, y: 0 };
+
+function initApplication() {
+  init3DScene();
+  startQRScanner();
+}
+
+function init3DScene() {
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+  renderer = new THREE.WebGLRenderer({ alpha: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  renderer.domElement.style.position = "absolute";
+  renderer.domElement.style.top = "0";
+  renderer.domElement.style.left = "0";
+  renderer.domElement.style.zIndex = "2";
+
+  const ambientLight = new THREE.AmbientLight(0xffffff, 1);
+  scene.add(ambientLight);
+
+  const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+  directionalLight.position.set(0, 10, 10);
+  scene.add(directionalLight);
+
+  camera.position.z = 5;
+  
+  setupMouseControls();
+  
+  animate();
+}
+
+function setupMouseControls() {
+  renderer.domElement.addEventListener('mousedown', onMouseDown, false);
+  renderer.domElement.addEventListener('touchstart', onTouchStart, false);
+  window.addEventListener('mousemove', onMouseMove, false);
+  window.addEventListener('touchmove', onTouchMove, false);
+  window.addEventListener('mouseup', onMouseUp, false);
+  window.addEventListener('touchend', onMouseUp, false);
+  window.addEventListener('mouseleave', onMouseUp, false);
+}
+
+function onMouseDown(event: MouseEvent) {
+  if (model && Date.now() - lastQRTimestamp < QR_TIMEOUT) {
+    isDragging = true;
+    previousMousePosition = {
+      x: event.clientX,
+      y: event.clientY
+    };
+    event.preventDefault();
+  }
+}
+
+function onTouchStart(event: TouchEvent) {
+  if (model && Date.now() - lastQRTimestamp < QR_TIMEOUT) {
+    isDragging = true;
+    previousMousePosition = {
+      x: event.touches[0].clientX,
+      y: event.touches[0].clientY
+    };
+    event.preventDefault();
+  }
+}
+
+function onMouseMove(event: MouseEvent) {
+  if (isDragging && model) {
+    const deltaMove = {
+      x: event.clientX - previousMousePosition.x,
+      y: event.clientY - previousMousePosition.y
+    };
+
+    targetRotation.y += deltaMove.x * ROTATION_SPEED;
+    targetRotation.x += deltaMove.y * ROTATION_SPEED;
+
+    previousMousePosition = {
+      x: event.clientX,
+      y: event.clientY
+    };
+    
+    event.preventDefault();
+  }
+}
+
+function onTouchMove(event: TouchEvent) {
+  if (isDragging && model) {
+    const deltaMove = {
+      x: event.touches[0].clientX - previousMousePosition.x,
+      y: event.touches[0].clientY - previousMousePosition.y
+    };
+
+    targetRotation.y += deltaMove.x * ROTATION_SPEED;
+    targetRotation.x += deltaMove.y * ROTATION_SPEED;
+
+    previousMousePosition = {
+      x: event.touches[0].clientX,
+      y: event.touches[0].clientY
+    };
+    
+    event.preventDefault();
+  }
+}
+
+function onMouseUp() {
+  isDragging = false;
+}
 
 async function startQRScanner() {
   try {
@@ -21,42 +139,18 @@ async function startQRScanner() {
       throw new Error("No se encontró ninguna cámara");
     }
 
-    // Escaneo continuo desde el dispositivo seleccionado
-    await qrReader.decodeFromVideoDevice(preferredDevice.deviceId, video, (result, error, controls) => {
+    await qrReader.decodeFromVideoDevice(preferredDevice.deviceId, video, (result, _error, _controls) => {
       if (result) {
         const qrData = result.getText();
         console.log("QR detectado:", qrData);
         showResult(qrData);
         
-        // Actualizar el timestamp cada vez que se detecta un QR
         lastQRTimestamp = Date.now();
         
-        // Obtener los puntos del QR
-        const resultPoints = result.getResultPoints();
-        if (resultPoints && resultPoints.length >= 3) {
-          // Calcular el centro y el tamaño aproximado del QR
-          const minX = Math.min(...resultPoints.map(p => p.getX()));
-          const maxX = Math.max(...resultPoints.map(p => p.getX()));
-          const minY = Math.min(...resultPoints.map(p => p.getY()));
-          const maxY = Math.max(...resultPoints.map(p => p.getY()));
-          
-          const qrWidth = maxX - minX;
-          const qrHeight = maxY - minY;
-          const qrCenterX = (minX + maxX) / 2;
-          const qrCenterY = (minY + maxY) / 2;
-          
-          // Guardar la ubicación del QR
-          lastQRLocation = {
-            x: qrCenterX,
-            y: qrCenterY,
-            width: qrWidth,
-            height: qrHeight
-          };
-          
-          // Cargar el modelo si es la primera vez que se detecta este QR
-          if (!model) {
-            loadModelFromURL(qrData);
-          }
+        processQRPoints(result.getResultPoints());
+        
+        if (!model) {
+          loadModel(qrData);
         }
       }
     });
@@ -65,6 +159,28 @@ async function startQRScanner() {
     console.error("Error al iniciar el escáner:", err);
   }
 }
+
+function processQRPoints(resultPoints: any[] | null) {
+  if (resultPoints && resultPoints.length >= 3) {
+    const minX = Math.min(...resultPoints.map(p => p.getX()));
+    const maxX = Math.max(...resultPoints.map(p => p.getX()));
+    const minY = Math.min(...resultPoints.map(p => p.getY()));
+    const maxY = Math.max(...resultPoints.map(p => p.getY()));
+    
+    const qrWidth = maxX - minX;
+    const qrHeight = maxY - minY;
+    const qrCenterX = (minX + maxX) / 2;
+    const qrCenterY = (minY + maxY) / 2;
+    
+    lastQRLocation = {
+      x: qrCenterX,
+      y: qrCenterY,
+      width: qrWidth,
+      height: qrHeight
+    };
+  }
+}
+
 function showResult(data: string) {
   const existing = document.getElementById("qr-result");
   if (existing) {
@@ -84,34 +200,7 @@ function showResult(data: string) {
   }
 }
 
-function init3DScene() {
-  // Crear la escena de Three.js
-  scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-  renderer = new THREE.WebGLRenderer({ alpha: true });
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  document.body.appendChild(renderer.domElement);
-
-  // Ajustar el estilo del canvas para asegurarse de que esté visible
-  renderer.domElement.style.position = "absolute";
-  renderer.domElement.style.top = "0";
-  renderer.domElement.style.left = "0";
-  renderer.domElement.style.zIndex = "2"; // Asegúrate de que el canvas esté por encima del video
-
-  // Agregar luz
-  const ambientLight = new THREE.AmbientLight(0xffffff, 1);
-  scene.add(ambientLight);
-
-  const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-  directionalLight.position.set(0, 10, 10);
-  scene.add(directionalLight);
-
-  camera.position.z = 5;
-  animate();
-}
-
-function loadModelFromURL(url: string) {
-  // Verificar si ya hay un modelo cargado y eliminarlo
+function loadModel(url: string) {
   if (model) {
     scene.remove(model);
     model = null;
@@ -119,7 +208,6 @@ function loadModelFromURL(url: string) {
 
   console.log("Intentando cargar modelo desde:", url);
 
-  // Verifica si la URL es válida
   try {
     new URL(url);
   } catch (e) {
@@ -129,43 +217,30 @@ function loadModelFromURL(url: string) {
 
   const loader = new GLTFLoader();
   
-  // Agrega una función de progreso para verificar el estado de la carga
   loader.load(
     url,
     (gltf) => {
       console.log("Modelo cargado correctamente:", gltf);
       model = gltf.scene;
 
-      // Centrar el modelo en su bounding box
       const box = new THREE.Box3().setFromObject(model);
       const center = box.getCenter(new THREE.Vector3());
-      model.position.sub(center); // Centra el modelo
+      model.position.sub(center);
 
-      // Escala el modelo para asegurarte de que sea visible
       const size = box.getSize(new THREE.Vector3());
       const maxDim = Math.max(size.x, size.y, size.z);
       if (maxDim > 0) {
-        const scale = 4.0 / maxDim; // Aumentado de 2.0 a 4.0 para duplicar el tamaño inicial
+        const scale = 4.0 / maxDim;
         model.scale.multiplyScalar(scale);
       }
 
-      // No posicionamos el modelo aquí, se posicionará en función del QR en animate()
-
-      // Mantener los materiales originales del modelo
       model.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          if (!child.material) {
-            // Solo asignar material si no tiene uno
-            child.material = new THREE.MeshStandardMaterial({ 
-              color: 0x888888,
-              roughness: 0.5,
-              metalness: 0.5
-            });
-          }
+        if (child instanceof THREE.Mesh && !child.material) {
+          child.material = new THREE.MeshStandardMaterial({ 
+            color: 0x888888, roughness: 0.5, metalness: 0.5
+          });
         }
       });
-
-      scene.add(model);
     },
     (progress) => {
       console.log(`Progreso de carga: ${(progress.loaded / progress.total * 100).toFixed(2)}%`);
@@ -178,63 +253,53 @@ function loadModelFromURL(url: string) {
 
 function updateModelPosition() {
   if (model && lastQRLocation) {
-    // Necesitamos ajustar cómo mapeamos las coordenadas del video a la escena 3D
-    
-    // Primero asegurarnos de que tenemos las dimensiones correctas del video
     const videoWidth = video.videoWidth || video.clientWidth;
     const videoHeight = video.videoHeight || video.clientHeight;
     
-    // Calcular las coordenadas normalizadas del centro del QR
-    // Transformamos de coordenadas de píxeles [0,width/height] a coordenadas normalizadas [-1,1]
-    // También invertimos el eje Y porque en el video el origen está arriba pero en Three.js está abajo
     const normalizedX = (lastQRLocation.x / videoWidth) * 2 - 1;
     const normalizedY = -((lastQRLocation.y / videoHeight) * 2 - 1);
     
-    // Ajustar la posición del modelo
-    // Reducimos los multiplicadores para un posicionamiento más preciso
     const aspectRatio = window.innerWidth / window.innerHeight;
     model.position.x = normalizedX * 3 * aspectRatio;
     model.position.y = normalizedY * 3;
-    model.position.z = -3; // Mantén el modelo delante de la cámara
+    model.position.z = -3;
     
-    // Ajustar la escala basada en el tamaño del QR
-    // Esto hace que el modelo sea proporcional al tamaño del QR en la pantalla
     const qrSizeInViewport = Math.min(lastQRLocation.width, lastQRLocation.height) / videoWidth;
-    const scaleFactor = qrSizeInViewport * 10; // Aumentado de 5 a 10 para duplicar el tamaño dinámico
+    const scaleFactor = qrSizeInViewport * 10;
     
-    // Aplicamos la escala, manteniendo las proporciones originales del modelo
     model.scale.set(scaleFactor, scaleFactor, scaleFactor);
     
-    // Opcional: agregar un marcador visual donde se detectó el QR (para depuración)
+    if (!model.parent) {
+      scene.add(model);
+      console.log("Modelo añadido a la escena y posicionado correctamente");
+    }
+    
     console.log(`QR detectado en: (${normalizedX.toFixed(2)}, ${normalizedY.toFixed(2)})`);
   }
 }
+
 function animate() {
   requestAnimationFrame(animate);
   
-  // Comprobar si el QR sigue siendo visible
   const qrIsVisible = Date.now() - lastQRTimestamp < QR_TIMEOUT;
-  
-  // Si el QR ya no es visible y tenemos un modelo, eliminarlo
+
   if (!qrIsVisible && model) {
     console.log("QR ya no es visible, eliminando modelo");
     scene.remove(model);
     model = null;
   }
   
-  // Actualizar la posición del modelo solo si existe y el QR es visible
   if (model && qrIsVisible) {
     updateModelPosition();
-  }
-  
-  // Rotar el modelo si existe
-  if (model) {
-    model.rotation.y += 0.01;
+    
+    currentRotation.x += (targetRotation.x - currentRotation.x) * ROTATION_DAMPING;
+    currentRotation.y += (targetRotation.y - currentRotation.y) * ROTATION_DAMPING;
+    
+    model.rotation.x = currentRotation.x;
+    model.rotation.y = currentRotation.y;
   }
   
   renderer.render(scene, camera);
 }
 
-// Inicializar la escena y el escáner QR
-init3DScene();
-startQRScanner();
+initApplication();

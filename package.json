@@ -15,7 +15,6 @@
   },
   "dependencies": {
     "@zxing/browser": "^0.1.5",
-    "jsqr": "^1.4.0",
     "three": "^0.176.0",
     "three-stdlib": "^2.36.0"
   }
